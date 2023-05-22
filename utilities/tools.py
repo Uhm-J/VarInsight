@@ -6,8 +6,9 @@ from time import sleep
 
 
 class clinvarInput(BaseModel):
-    variant: str = Field()
-    gene: str = Field()
+    term: str = Field(default="")
+    method: str = Field(default="Search")
+
 class ClinVarAPIWrapper(BaseModel):
     """Wrapper around ClinVar.
 
@@ -18,7 +19,22 @@ class ClinVarAPIWrapper(BaseModel):
     """
 
     name = "ClinVar API"
-    description = "Use the ClinVar API to get information about a variant."
+    description = """
+                    Use the ClinVar API to get information about a variant.
+                    You have the following options:
+                    - term: The term to search for.
+                    - method: The method to use. "Search" or "Fetch".
+                    
+                    Example:
+                        term: "c.1187G>A AND CMTR1[gene]" or "p.Arg396Gln AND CMTR1[gene]"
+                        method: "Search"
+                        
+                    This returns a list of IDs. Which can be used to fetch the summary.
+                    
+                    If you want to fetch the summary, use the following:
+                        term: "123456" (Single ID from the search to avoid token limit)
+                        method: "Fetch"
+                  """
     args_schema = clinvarInput
 
 
@@ -31,15 +47,6 @@ class ClinVarAPIWrapper(BaseModel):
         extra = Extra.forbid
         arbitrary_types_allowed = True
 
-    """
-    TODO:
-    Change the way the API is called, so it is more dynamic.
-    And the agent can decide which function to call.
-        --> Not sure how to do this yet.
-        Maybe by using a dictionary with the function names as keys?
-        
-    """
-
     def _request(self, endpoint, params=None):
         url = self.BASE_URL + endpoint
         response = self.session.get(url, params=params)
@@ -51,22 +58,21 @@ class ClinVarAPIWrapper(BaseModel):
         params = {'db': 'clinvar', 'term': term, 'retmode': 'json'}
         return ','.join(self._request('esearch.fcgi', params)['esearchresult']['idlist'])
 
-    def _fetch_variant(self, id):
-        """Fetch a variant by ID."""
-        params = {'db': 'clinvar', 'id': id, 'retmode': 'json'}
-        return self._request('efetch.fcgi', params)
-
     def _fetch_summary(self, id):
         """Fetch a variant summary by ID."""
         params = {'db': 'clinvar', 'id': id, 'retmode': 'json'}
         return self._request('esummary.fcgi', params)
 
-    def run(self, variant: str, gene: str) -> str:
+    def run(self, term: str, method: str) -> str:
         """Fetch a variant summary by ID."""
-        term = variant + " + " + gene
-        params = {'db': 'clinvar', 'id': self._search_variant(term) , 'retmode': 'json'}
-        sleep(0.5)
-        return self._outputParser(self._request('esummary.fcgi', params))
+        if method == "Search":
+            result = self._search_variant(term)
+        elif method == "Fetch":
+            result = self._fetch_summary(term)
+            result = self._outputParser(result)
+        else:
+            result = "Method not found."
+        return result
 
     def _outputParser(self, output: Dict[str, Any]) -> str:
         """Parse the output of the ClinVar API."""
@@ -79,16 +85,16 @@ class ClinVarAPIWrapper(BaseModel):
                           "supporting_submissions": output['result'][id]['supporting_submissions'],
                           "clinical_significance": output['result'][id]['clinical_significance'],
                           "record_status": output['result'][id]['record_status'],
-                          "trait_set": output['result'][id]["trait_set"],
-                          "keys": output['result'][id].keys()}
+                          "trait_set": output['result'][id]["trait_set"]}
         formatted = pformat(vardic)
         if len(formatted) > 3000:
-            return f"Too many results were found. Only giving first 2000 characters.\n {formatted[:3000]}"
-        return
+            return f"Too many results were found. Only giving first 3000 characters.\n {formatted[:3000]}"
+        return formatted
 
 
 class PubMedInput(BaseModel):
-    search_term: str = Field()
+    term: str = Field(default="")
+    method: str = Field(default="run")
 
 class PubMedAPIWrapper:
     """Wrapper around PubMed.
@@ -101,8 +107,21 @@ class PubMedAPIWrapper:
 
 
     name = "PubMed API"
-    description = "Use the PubMed API to get information out of the latest articles about a variant."
+    description = """
+                        Use the PubMed API to get literature about a variant.
+                        You have the following options:
+                        - term: The term to search for.
+                        - method: The method to use. "Search" or "Fetch".
+                        Search returns a list of IDs. Which can be used to fetch the summary.
 
+                        Example:
+                            term: "c.1187G>A AND CMTR1[gene]" or "p.Arg396Gln AND CMTR1[gene]"
+                            method: "Search"
+
+                        If you want to fetch the summary, use the following:
+                            term: "123456" (Single ID from the search to avoid token limit)
+                            method: "Fetch"
+                      """
     BASE_URL = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/'
     session: Any = requests.Session()
     arg_scheme = PubMedInput
@@ -120,7 +139,83 @@ class PubMedAPIWrapper:
         response.raise_for_status()  # Raise an exception if the request was unsuccessful
         return response.json()  # Assumes that the response body is JSON
 
-    def search_variant(self, search_term : str) -> str:
+    def _search_variant(self, search_term : str) -> str:
         """Search for a variant in PubMed."""
-        params = {'db': 'pubmed', 'term': search_term, 'retmode': 'json'}
+        params = {'db': 'pubmed', 'term': search_term, 'retmode': 'json', 'retmax': 5}
         return self._request('esearch.fcgi', params)
+
+    def _fetch_summary(self, id):
+        """Fetch a variant summary by ID."""
+        params = {'db': 'pubmed', 'id': id, 'retmode': 'json'}
+        return self._request('esummary.fcgi', params)
+
+    def run(self, term: str, method: str) -> str:
+        """Fetch a variant summary by ID."""
+        if method == "Search":
+            result = self._search_variant(term)
+        elif method == "Fetch":
+            result = self._fetch_summary(term)
+        else:
+            result = "Method not found."
+        return result
+
+class omimInput(BaseModel):
+    id: str = Field(default="")
+    database: str = Field(default="omim")
+
+class OmimAPIWrapper:
+    """Wrapper around OMIM.
+
+            Example:
+                .. code-block:: python
+                    from utilities.tools import OmimAPIWrapper
+                    omim = OmimAPIWrapper()
+    """
+
+
+    name = "OMIM API"
+    description = """
+                        Use the OMIM API to get information about a variant.
+                        You have the following options:
+                        - id: The id to search for.
+                        - database: The database to search, available: 'OMIM', 'MeSH', 'MedGen'.
+                        
+                        If you want to fetch the summary, use the following:
+                            term: "123456" (Single ID from the search to avoid token limit)
+                            database: "OMIM"
+                        
+                        # Fetches the summary of the variant based on ID in the database of choice
+                      """
+    BASE_URL = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/'
+    session: Any = requests.Session()
+    arg_scheme = PubMedInput
+
+    class Config:
+        """Configuration for this pydantic object."""
+
+        extra = Extra.forbid
+        arbitrary_types_allowed = True
+
+
+    def _request(self, endpoint, params=None):
+        url = self.BASE_URL + endpoint
+        response = self.session.get(url, params=params)
+        response.raise_for_status()  # Raise an exception if the request was unsuccessful
+        return response.json()  # Assumes that the response body is JSON
+
+    def _search_variant(self, search_term : str) -> str:
+        """Search for a variant in PubMed."""
+        params = {'db': 'omim', 'term': search_term, 'retmode': 'json', 'retmax': 5}
+        return self._request('esearch.fcgi', params)
+
+    def _fetch_summary(self, id, database):
+        """Fetch a variant summary by ID."""
+        params = {'db': database, 'id': id, 'retmode': 'json'}
+        return self._request('esummary.fcgi', params)
+
+    def run(self, id: str, database: str) -> str:
+        """Fetch a variant summary by ID."""
+
+        result = self._fetch_summary(id, database)
+
+        return result
